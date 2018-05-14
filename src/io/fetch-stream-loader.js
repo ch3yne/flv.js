@@ -88,7 +88,10 @@ class FetchStreamLoader extends BaseLoader {
             method: 'GET',
             headers: headers,
             mode: 'cors',
-            cache: 'default'
+            cache: 'default',
+            // The default policy of Fetch API in the whatwg standard
+            // Safari incorrectly indicates 'no-referrer' as default policy, fuck it
+            referrerPolicy: 'no-referrer-when-downgrade'
         };
 
         // cors is enabled by default
@@ -100,6 +103,11 @@ class FetchStreamLoader extends BaseLoader {
         // withCredentials is disabled by default
         if (dataSource.withCredentials) {
             params.credentials = 'include';
+        }
+
+        // referrerPolicy from config
+        if (dataSource.referrerPolicy) {
+            params.referrerPolicy = dataSource.referrerPolicy;
         }
 
         this._status = LoaderStatus.kConnecting;
@@ -153,9 +161,23 @@ class FetchStreamLoader extends BaseLoader {
     _pump(reader) {  // ReadableStreamReader
         return reader.read().then((result) => {
             if (result.done) {
-                this._status = LoaderStatus.kComplete;
-                if (this._onComplete) {
-                    this._onComplete(this._range.from, this._range.from + this._receivedLength - 1);
+                // First check received length
+                if (this._contentLength !== null && this._receivedLength < this._contentLength) {
+                    // Report Early-EOF
+                    this._status = LoaderStatus.kError;
+                    let type = LoaderErrors.EARLY_EOF;
+                    let info = {code: -1, msg: 'Fetch stream meet Early-EOF'};
+                    if (this._onError) {
+                        this._onError(type, info);
+                    } else {
+                        throw new RuntimeException(info.msg);
+                    }
+                } else {
+                    // OK. Download complete
+                    this._status = LoaderStatus.kComplete;
+                    if (this._onComplete) {
+                        this._onComplete(this._range.from, this._range.from + this._receivedLength - 1);
+                    }
                 }
             } else {
                 if (this._requestAbort === true) {
@@ -174,7 +196,7 @@ class FetchStreamLoader extends BaseLoader {
                     this._onDataArrival(chunk, byteStart, this._receivedLength);
                 }
 
-                return this._pump(reader);
+                this._pump(reader);
             }
         }).catch((e) => {
             if (e.code === 11 && Browser.msedge) {  // InvalidStateError on Microsoft Edge

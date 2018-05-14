@@ -52,6 +52,7 @@ class FLVDemuxer {
 
         this._onError = null;
         this._onMediaInfo = null;
+        this._onMetaDataArrived = null;
         this._onTrackMetadata = null;
         this._onDataAvailable = null;
 
@@ -61,6 +62,9 @@ class FLVDemuxer {
 
         this._hasAudio = probeData.hasAudioTrack;
         this._hasVideo = probeData.hasVideoTrack;
+
+        this._hasAudioFlagOverrided = false;
+        this._hasVideoFlagOverrided = false;
 
         this._audioInitialMetadataDispatched = false;
         this._videoInitialMetadataDispatched = false;
@@ -119,6 +123,7 @@ class FLVDemuxer {
 
         this._onError = null;
         this._onMediaInfo = null;
+        this._onMetaDataArrived = null;
         this._onTrackMetadata = null;
         this._onDataAvailable = null;
     }
@@ -172,6 +177,14 @@ class FLVDemuxer {
         this._onMediaInfo = callback;
     }
 
+    get onMetaDataArrived() {
+        return this._onMetaDataArrived;
+    }
+
+    set onMetaDataArrived(callback) {
+        this._onMetaDataArrived = callback;
+    }
+
     // prototype: function(type: number, info: string): void
     get onError() {
         return this._onError;
@@ -208,6 +221,20 @@ class FLVDemuxer {
         this._durationOverrided = true;
         this._duration = duration;
         this._mediaInfo.duration = duration;
+    }
+
+    // Force-override audio track present flag, boolean
+    set overridedHasAudio(hasAudio) {
+        this._hasAudioFlagOverrided = true;
+        this._hasAudio = hasAudio;
+        this._mediaInfo.hasAudio = hasAudio;
+    }
+
+    // Force-override video track present flag, boolean
+    set overridedHasVideo(hasVideo) {
+        this._hasVideoFlagOverrided = true;
+        this._hasVideo = hasVideo;
+        this._mediaInfo.hasVideo = hasVideo;
     }
 
     resetMediaInfo() {
@@ -332,19 +359,31 @@ class FLVDemuxer {
         let scriptData = AMF.parseScriptData(arrayBuffer, dataOffset, dataSize);
 
         if (scriptData.hasOwnProperty('onMetaData')) {
+            if (scriptData.onMetaData == null || typeof scriptData.onMetaData !== 'object') {
+                Log.w(this.TAG, 'Invalid onMetaData structure!');
+                return;
+            }
             if (this._metadata) {
                 Log.w(this.TAG, 'Found another onMetaData tag!');
             }
             this._metadata = scriptData;
             let onMetaData = this._metadata.onMetaData;
 
+            if (this._onMetaDataArrived) {
+                this._onMetaDataArrived(Object.assign({}, onMetaData));
+            }
+
             if (typeof onMetaData.hasAudio === 'boolean') {  // hasAudio
-                this._hasAudio = onMetaData.hasAudio;
-                this._mediaInfo.hasAudio = this._hasAudio;
+                if (this._hasAudioFlagOverrided === false) {
+                    this._hasAudio = onMetaData.hasAudio;
+                    this._mediaInfo.hasAudio = this._hasAudio;
+                }
             }
             if (typeof onMetaData.hasVideo === 'boolean') {  // hasVideo
-                this._hasVideo = onMetaData.hasVideo;
-                this._mediaInfo.hasVideo = this._hasVideo;
+                if (this._hasVideoFlagOverrided === false) {
+                    this._hasVideo = onMetaData.hasVideo;
+                    this._mediaInfo.hasVideo = this._hasVideo;
+                }
             }
             if (typeof onMetaData.audiodatarate === 'number') {  // audiodatarate
                 this._mediaInfo.audioDataRate = onMetaData.audiodatarate;
@@ -418,6 +457,12 @@ class FLVDemuxer {
             return;
         }
 
+        if (this._hasAudioFlagOverrided === true && this._hasAudio === false) {
+            // If hasAudio: false indicated explicitly in MediaDataSource,
+            // Ignore all the audio packets
+            return;
+        }
+
         let le = this._littleEndian;
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
 
@@ -446,7 +491,7 @@ class FLVDemuxer {
         let track = this._audioTrack;
 
         if (!meta) {
-            if (this._hasAudio === false) {
+            if (this._hasAudio === false && this._hasAudioFlagOverrided === false) {
                 this._hasAudio = true;
                 this._mediaInfo.hasAudio = true;
             }
@@ -475,9 +520,10 @@ class FLVDemuxer {
                 meta.audioSampleRate = misc.samplingRate;
                 meta.channelCount = misc.channelCount;
                 meta.codec = misc.codec;
+                meta.originalCodec = misc.originalCodec;
                 meta.config = misc.config;
                 // The decode result of an aac sample is 1024 PCM samples
-                meta.refSampleDuration = Math.floor(1024 / meta.audioSampleRate * meta.timescale);
+                meta.refSampleDuration = 1024 / meta.audioSampleRate * meta.timescale;
                 Log.v(this.TAG, 'Parsed AudioSpecificConfig');
 
                 if (this._isInitialMetadataDispatched()) {
@@ -493,7 +539,7 @@ class FLVDemuxer {
                 this._onTrackMetadata('audio', meta);
 
                 let mi = this._mediaInfo;
-                mi.audioCodec = 'mp4a.40.' + misc.originalAudioObjectType;
+                mi.audioCodec = meta.originalCodec;
                 mi.audioSampleRate = meta.audioSampleRate;
                 mi.audioChannelCount = meta.channelCount;
                 if (mi.hasVideo) {
@@ -508,7 +554,7 @@ class FLVDemuxer {
                 }
             } else if (aacData.packetType === 1) {  // AAC raw frame data
                 let dts = this._timestampBase + tagTimestamp;
-                let aacSample = {unit: aacData.data, dts: dts, pts: dts};
+                let aacSample = {unit: aacData.data, length: aacData.data.byteLength, dts: dts, pts: dts};
                 track.samples.push(aacSample);
                 track.length += aacData.data.length;
             } else {
@@ -522,10 +568,11 @@ class FLVDemuxer {
                     return;
                 }
                 meta.audioSampleRate = misc.samplingRate;
-                meta.channelConfig = misc.channelCount;
+                meta.channelCount = misc.channelCount;
                 meta.codec = misc.codec;
+                meta.originalCodec = misc.originalCodec;
                 // The decode result of an mp3 sample is 1152 PCM samples
-                meta.refSampleDuration = Math.floor(1152 / meta.audioSampleRate * meta.timescale);
+                meta.refSampleDuration = 1152 / meta.audioSampleRate * meta.timescale;
                 Log.v(this.TAG, 'Parsed MPEG Audio Frame Header');
 
                 this._audioInitialMetadataDispatched = true;
@@ -554,7 +601,7 @@ class FLVDemuxer {
                 return;
             }
             let dts = this._timestampBase + tagTimestamp;
-            let mp3Sample = {unit: data, dts: dts, pts: dts};
+            let mp3Sample = {unit: data, length: data.byteLength, dts: dts, pts: dts};
             track.samples.push(mp3Sample);
             track.length += data.length;
         }
@@ -677,7 +724,7 @@ class FLVDemuxer {
             samplingRate: samplingFrequence,
             channelCount: channelConfig,
             codec: 'mp4a.40.' + audioObjectType,
-            originalAudioObjectType: originalAudioObjectType
+            originalCodec: 'mp4a.40.' + originalAudioObjectType
         };
     }
 
@@ -747,7 +794,8 @@ class FLVDemuxer {
                 bitRate: bit_rate,
                 samplingRate: sample_rate,
                 channelCount: channel_count,
-                codec: codec
+                codec: codec,
+                originalCodec: codec
             };
         } else {
             result = array;
@@ -759,6 +807,12 @@ class FLVDemuxer {
     _parseVideoData(arrayBuffer, dataOffset, dataSize, tagTimestamp, tagPosition) {
         if (dataSize <= 1) {
             Log.w(this.TAG, 'Flv: Invalid video packet, missing VideoData payload!');
+            return;
+        }
+
+        if (this._hasVideoFlagOverrided === true && this._hasVideo === false) {
+            // If hasVideo: false indicated explicitly in MediaDataSource,
+            // Ignore all the video packets
             return;
         }
 
@@ -785,7 +839,8 @@ class FLVDemuxer {
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
 
         let packetType = v.getUint8(0);
-        let cts = v.getUint32(0, !le) & 0x00FFFFFF;
+        let cts_unsigned = v.getUint32(0, !le) & 0x00FFFFFF;
+        let cts = (cts_unsigned << 8) >> 8;  // convert to 24-bit signed int
 
         if (packetType === 0) {  // AVCDecoderConfigurationRecord
             this._parseAVCDecoderConfigurationRecord(arrayBuffer, dataOffset + 4, dataSize - 4);
@@ -811,7 +866,7 @@ class FLVDemuxer {
         let v = new DataView(arrayBuffer, dataOffset, dataSize);
 
         if (!meta) {
-            if (this._hasVideo === false) {
+            if (this._hasVideo === false && this._hasVideoFlagOverrided === false) {
                 this._hasVideo = true;
                 this._mediaInfo.hasVideo = true;
             }
@@ -891,7 +946,7 @@ class FLVDemuxer {
 
             let fps_den = meta.frameRate.fps_den;
             let fps_num = meta.frameRate.fps_num;
-            meta.refSampleDuration = Math.floor(meta.timescale * (fps_den / fps_num));
+            meta.refSampleDuration = meta.timescale * (fps_den / fps_num);
 
             let codecArray = sps.subarray(1, 4);
             let codecString = 'avc1.';
@@ -910,6 +965,7 @@ class FLVDemuxer {
             mi.fps = meta.frameRate.fps;
             mi.profile = meta.profile;
             mi.level = meta.level;
+            mi.refFrames = config.ref_frames;
             mi.chromaFormat = config.chroma_format_string;
             mi.sarNum = meta.sarRatio.width;
             mi.sarDen = meta.sarRatio.height;

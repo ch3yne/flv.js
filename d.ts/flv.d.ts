@@ -32,6 +32,9 @@ declare namespace FlvJs {
         cors?: boolean,
         withCredentials?: boolean,
 
+        hasAudio?: boolean,
+        hasVideo?: boolean,
+
         duration?: number;
         filesize?: number;
         url?: string;
@@ -51,7 +54,13 @@ declare namespace FlvJs {
         lazyLoadRecoverDuration?: number,
         deferLoadAfterSourceOpen?: boolean,
 
+        autoCleanupSourceBuffer?: boolean,
+        autoCleanupMaxBackwardDuration?: number,
+        autoCleanupMinBackwardDuration?: number,
+
         statisticsInfoReportInterval?: number,
+
+        fixAudioTimestampGap?: boolean,
 
         accurateSeek?: boolean,
         seekType?: string,  // [range, param, custom]
@@ -59,8 +68,60 @@ declare namespace FlvJs {
         seekParamEnd?: string,
         rangeLoadZeroStart?: boolean,
         customSeekHandler?: any,
-        reuseRedirectedURL?: boolean
+        reuseRedirectedURL?: boolean,
+        referrerPolicy?: string
+
+        customLoader?: CustomLoaderConstructor;
     }
+
+    interface BaseLoaderConstructor {
+        new(typeName: string): BaseLoader;
+    }
+
+    interface BaseLoader {
+        protected _status: number;
+        protected _needStash: boolean;
+
+        constructor: BaseLoaderConstructor;
+        destroy(): void;
+        isWorking(): boolean;
+        readonly type: string;
+        readonly status: number;
+        readonly needStashBuffer: boolean;
+        onContentLengthKnown: Function;
+        onURLRedirect: Function;
+        onDataArrival: Function;
+        onError: Function;
+        onComplete: Function;
+        abstract open(dataSource: MediaSegment, range: Range): void;
+        abstract abort(): void;
+    }
+
+    interface CustomLoaderConstructor {
+        new(seekHandler: any, config: Config): BaseLoader;
+    }
+
+    interface Range {
+        from: number;
+        to: number;
+    }
+
+    declare const LoaderStatus: {
+        kIdle: 0,
+        kConnecting: 1,
+        kBuffering: 2,
+        kError: 3,
+        kComplete: 4
+    };
+
+    declare const LoaderErrors: {
+        OK: 'OK',
+        EXCEPTION: 'Exception',
+        HTTP_STATUS_CODE_INVALID: 'HttpStatusCodeInvalid',
+        CONNECTING_TIMEOUT: 'ConnectingTimeout',
+        EARLY_EOF: 'EarlyEof',
+        UNRECOVERABLE_EARLY_EOF: 'UnrecoverableEarlyEof'
+    };
 
     interface FeatureList {
         mseFlvPlayback: boolean,
@@ -85,7 +146,7 @@ declare namespace FlvJs {
         detachMediaElement(): void;
         load(): void;
         unload(): void;
-        play(): void;
+        play(): Promise<void>;
         pause(): void;
         type: string;
         buffered: TimeRanges;
@@ -104,16 +165,18 @@ declare namespace FlvJs {
     }
 
     interface LoggingControl {
-        forceGlobalTag: boolean,
-        globalTag: string,
-        enableAll: boolean,
-        enableDebug: boolean,
-        enableVerbose: boolean,
-        enableInfo: boolean,
-        enableWarn: boolean,
-        enableError: boolean,
-        getConfig: Object,
-        applyConfig: Object,
+        forceGlobalTag: boolean;
+        globalTag: string;
+        enableAll: boolean;
+        enableDebug: boolean;
+        enableVerbose: boolean;
+        enableInfo: boolean;
+        enableWarn: boolean;
+        enableError: boolean;
+        getConfig(): Object;
+        applyConfig(config: Object): void;
+        addLogListener(listener: Function): void;
+        removeLogListener(listener: Function): void;
     }
 
     interface Events {
@@ -121,6 +184,7 @@ declare namespace FlvJs {
         LOADING_COMPLETE: string,
         RECOVERED_EARLY_EOF: string,
         MEDIA_INFO: string,
+        METADATA_ARRIVED: string,
         STATISTICS_INFO: string
     }
 
@@ -150,6 +214,10 @@ declare var flvjs: {
     isSupported(): boolean,
     getFeatureList(): FlvJs.FeatureList,
 
+    BaseLoader: FlvJs.BaseLoaderConstructor,
+    LoaderStatus: FlvJs.LoaderStatus,
+    LoaderErrors: FlvJS.LoaderErrors,
+
     Events: FlvJs.Events,
     ErrorTypes: FlvJs.ErrorTypes,
     ErrorDetails: FlvJs.ErrorDetails,
@@ -158,3 +226,5 @@ declare var flvjs: {
     NativePlayer: FlvJs.PlayerConstructor,
     LoggingControl: FlvJs.LoggingControl
 };
+
+export default flvjs;
